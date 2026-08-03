@@ -8,6 +8,7 @@ import {
     type BaseApplicationCommandData,
     type ChatInputApplicationCommandData,
     type ChatInputCommandInteraction,
+    type ClientEvents,
     type MessageApplicationCommandData,
     type MessageContextMenuCommandInteraction,
     type UserApplicationCommandData,
@@ -42,6 +43,16 @@ class Command<T extends BaseApplicationCommandData, U extends CommandInteraction
 export class SlashCommand extends Command<ChatInputApplicationCommandData & { type: ApplicationCommandType.ChatInput }, ChatInputCommandInteraction, true> {}
 export class UserCommand extends Command<UserApplicationCommandData, UserContextMenuCommandInteraction> {}
 export class MessageCommand extends Command<MessageApplicationCommandData, MessageContextMenuCommandInteraction> {}
+
+export class EventHandler<T extends keyof ClientEvents> {
+    event: T;
+    handler: (...args: ClientEvents[T]) => unknown;
+
+    constructor({ event, handler }: { event: T; handler: (...args: ClientEvents[T]) => unknown }) {
+        this.event = event;
+        this.handler = handler;
+    }
+}
 
 export async function loadCommands(client: Client<true>, directory: string) {
     const files = await fs.readdir(path.resolve(directory), { recursive: false, withFileTypes: true });
@@ -110,4 +121,19 @@ export async function loadInteractions(client: Client<true>, directory: string, 
 
         handlers.get(path)?.(interaction, ...args);
     });
+}
+
+export async function loadEvents(client: Client<true>, directory: string, recursive: boolean = false) {
+    const files = await fs.readdir(path.resolve(directory), { recursive, withFileTypes: true });
+    const handlers: Partial<{ [K in keyof ClientEvents]: ((...args: ClientEvents[K]) => unknown)[] }> = {};
+
+    await Promise.all(
+        files.map(async (file) => {
+            if (file.isDirectory()) return;
+            const { default: item } = await import(path.resolve(file.parentPath, file.name));
+            if (item instanceof EventHandler) (handlers[item.event as keyof ClientEvents] ??= []).push(item.handler);
+        }),
+    );
+
+    Object.entries(handlers).forEach(([key, handlers]) => client.on(key, (...args) => handlers.forEach((handler) => (handler as any)(...args))));
 }
