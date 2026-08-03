@@ -1,5 +1,6 @@
 import {
     ApplicationCommandType,
+    AutocompleteInteraction,
     Client,
     CommandInteraction,
     Events,
@@ -17,19 +18,28 @@ import path from "node:path";
 
 process.on("uncaughtException", (err) => console.error(err));
 
-type Handler<T extends CommandInteraction> = (interaction: T) => Awaitable<unknown>;
+type Handler<T extends CommandInteraction | AutocompleteInteraction> = (interaction: T) => Awaitable<unknown>;
 
-class Command<T extends BaseApplicationCommandData, U extends CommandInteraction> {
+class Command<T extends BaseApplicationCommandData, U extends CommandInteraction, Z extends boolean = false> {
     data: T;
     handler: Handler<U>;
+    autocomplete: Handler<AutocompleteInteraction> | null;
 
-    constructor({ handler, ...data }: T & { handler: Handler<U> }) {
-        this.data = data as unknown as T;
+    constructor({ handler, ...data }: T & { handler: Handler<U> } & (Z extends true ? { autocomplete?: Handler<AutocompleteInteraction> } : {})) {
+        if ("autocomplete" in data) {
+            const { autocomplete, ...rest } = data;
+            this.autocomplete = autocomplete as Handler<AutocompleteInteraction>;
+            this.data = rest as unknown as T;
+        } else {
+            this.autocomplete = null;
+            this.data = data as unknown as T;
+        }
+
         this.handler = handler;
     }
 }
 
-export class SlashCommand extends Command<ChatInputApplicationCommandData & { type: ApplicationCommandType.ChatInput }, ChatInputCommandInteraction> {}
+export class SlashCommand extends Command<ChatInputApplicationCommandData & { type: ApplicationCommandType.ChatInput }, ChatInputCommandInteraction, true> {}
 export class UserCommand extends Command<UserApplicationCommandData, UserContextMenuCommandInteraction> {}
 export class MessageCommand extends Command<MessageApplicationCommandData, MessageContextMenuCommandInteraction> {}
 
@@ -42,6 +52,8 @@ export async function loadCommands(client: Client<true>, directory: string) {
     const userCommandHandlers = new Map<string, Handler<UserContextMenuCommandInteraction>>();
     const messageCommandHandlers = new Map<string, Handler<MessageContextMenuCommandInteraction>>();
 
+    const slashCommandAutocompletes = new Map<string, Handler<AutocompleteInteraction>>();
+
     await Promise.all(
         files.map(async (file) => {
             const { default: item } = await import(path.resolve(file.parentPath, file.name));
@@ -49,6 +61,7 @@ export async function loadCommands(client: Client<true>, directory: string) {
             if (item instanceof SlashCommand) {
                 commandData.push(item.data);
                 slashCommandHandlers.set(item.data.name, item.handler);
+                if (item.autocomplete) slashCommandAutocompletes.set(item.data.name, item.autocomplete);
             } else if (item instanceof UserCommand) {
                 commandData.push(item.data);
                 userCommandHandlers.set(item.data.name, item.handler);
@@ -67,6 +80,7 @@ export async function loadCommands(client: Client<true>, directory: string) {
         if (interaction.isChatInputCommand()) slashCommandHandlers.get(interaction.commandName)?.(interaction);
         else if (interaction.isUserContextMenuCommand()) userCommandHandlers.get(interaction.commandName)?.(interaction);
         else if (interaction.isMessageContextMenuCommand()) messageCommandHandlers.get(interaction.commandName)?.(interaction);
+        else if (interaction.isAutocomplete()) slashCommandAutocompletes.get(interaction.commandName)?.(interaction);
     });
 }
 
